@@ -29,18 +29,20 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-package par
+package queue_test
 
 import (
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/bucket-sailor/queue"
 )
 
 func TestQueue(t *testing.T) {
 	t.Run("Idle", func(t *testing.T) {
-		q := NewQueue(1)
+		q := queue.NewQueue(1)
 		select {
 		case <-q.Idle():
 		default:
@@ -72,7 +74,7 @@ func TestQueue(t *testing.T) {
 			totalWork = 3 * maxActive
 		)
 
-		q := NewQueue(maxActive)
+		q := queue.NewQueue(maxActive)
 
 		var wg sync.WaitGroup
 		wg.Add(totalWork)
@@ -116,7 +118,7 @@ func TestQueue(t *testing.T) {
 			active int32
 			max    int32
 		)
-		q := NewQueue(maxActive)
+		q := queue.NewQueue(maxActive)
 
 		var wg sync.WaitGroup
 		wg.Add(taskCount)
@@ -142,7 +144,7 @@ func TestQueue(t *testing.T) {
 	})
 
 	t.Run("Clear", func(t *testing.T) {
-		q := NewQueue(1)
+		q := queue.NewQueue(1)
 
 		// Block the queue.
 		q.Add(func() {
