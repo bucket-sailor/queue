@@ -32,6 +32,8 @@
 package queue_test
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -41,31 +43,30 @@ import (
 )
 
 func TestQueue(t *testing.T) {
-	t.Run("Idle", func(t *testing.T) {
-		q := queue.NewQueue(1)
-		select {
-		case <-q.Idle():
-		default:
-			t.Errorf("NewQueue(1) is not initially idle.")
+	t.Run("Wait", func(t *testing.T) {
+		q := queue.NewQueue(2)
+		var count int32
+
+		// Add tasks that increment count
+		taskCount := 5
+		for i := 0; i < taskCount; i++ {
+			q.Add(func() error {
+				time.Sleep(1 * time.Millisecond) // Simulate work
+				atomic.AddInt32(&count, 1)
+				return nil
+			})
 		}
 
-		started := make(chan struct{})
-		unblock := make(chan struct{})
-		q.Add(func() {
-			close(started)
-			<-unblock
-		})
-
-		<-started
-		idle := q.Idle()
-		select {
-		case <-idle:
-			t.Errorf("NewQueue(1) is marked idle while processing work.")
-		default:
+		// Wait for all tasks to complete
+		err := q.Wait()
+		if err != nil {
+			t.Fatalf("Wait returned an error: %v", err)
 		}
 
-		close(unblock)
-		<-idle // Should be closed as soon as the Add callback returns.
+		// Check if all tasks were executed
+		if atomic.LoadInt32(&count) != int32(taskCount) {
+			t.Errorf("Expected count to be %d, got %d", taskCount, atomic.LoadInt32(&count))
+		}
 	})
 
 	t.Run("Backlog", func(t *testing.T) {
@@ -83,10 +84,11 @@ func TestQueue(t *testing.T) {
 		for i := range started {
 			started[i] = make(chan struct{})
 			i := i
-			q.Add(func() {
+			q.Add(func() error {
 				close(started[i])
 				<-unblock
 				wg.Done()
+				return nil
 			})
 		}
 
@@ -124,7 +126,7 @@ func TestQueue(t *testing.T) {
 		wg.Add(taskCount)
 
 		for i := 0; i < taskCount; i++ {
-			q.Add(func() {
+			q.Add(func() error {
 				atomic.AddInt32(&active, 1)
 				current := atomic.LoadInt32(&active)
 				if current > max {
@@ -133,6 +135,7 @@ func TestQueue(t *testing.T) {
 				time.Sleep(10 * time.Millisecond) // simulate work
 				atomic.AddInt32(&active, -1)
 				wg.Done()
+				return nil
 			})
 		}
 
@@ -147,14 +150,18 @@ func TestQueue(t *testing.T) {
 		q := queue.NewQueue(1)
 
 		// Block the queue.
-		q.Add(func() {
+		q.Add(func() error {
 			time.Sleep(10 * time.Millisecond)
+
+			return nil
 		})
 
 		// Add a queued task that should not be executed just yet.
 		var executed int32
-		q.Add(func() {
+		q.Add(func() error {
 			atomic.AddInt32(&executed, 1)
+
+			return nil
 		})
 
 		q.Clear()
@@ -166,14 +173,50 @@ func TestQueue(t *testing.T) {
 		}
 
 		// Ensure queue is still operational after Clear
-		q.Add(func() {
+		q.Add(func() error {
 			atomic.AddInt32(&executed, 1)
+
+			return nil
 		})
 
-		time.Sleep(10 * time.Millisecond)
+		err := q.Wait()
+		if err != nil {
+			t.Errorf("Queue returned error after Clear: %v", err)
+		}
 
 		if atomic.LoadInt32(&executed) != 1 {
 			t.Errorf("Queue did not execute task added after Clear")
+		}
+	})
+
+	t.Run("Error", func(t *testing.T) {
+		q := queue.NewQueue(2)
+
+		noErrorTask := func() error {
+			time.Sleep(10 * time.Millisecond) // Simulate work
+			return nil
+		}
+
+		// Add a task that returns no error.
+		q.Add(noErrorTask)
+
+		// Add a task that returns an error.
+		expectedError := fmt.Errorf("expected error")
+		q.Add(func() error {
+			return expectedError
+		})
+
+		// Add more tasks after the error-generating task to ensure they are processed.
+		q.Add(noErrorTask)
+
+		// Wait for all tasks to complete and check for an error
+		err := q.Wait()
+		if err == nil {
+			t.Fatalf("Expected an error from Wait, got nil")
+		}
+
+		if !errors.Is(err, expectedError) {
+			t.Errorf("Error returned from Wait does not match expected error: %v", err)
 		}
 	})
 

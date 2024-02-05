@@ -33,7 +33,6 @@ package queue
 
 import (
 	"fmt"
-	"sync"
 )
 
 // Queue manages a set of work items to be executed in parallel. The number of
@@ -41,13 +40,13 @@ import (
 type Queue struct {
 	maxActive int
 	st        chan queueState
-	mu        sync.Mutex
 }
 
 type queueState struct {
 	active  int // number of goroutines processing work; always nonzero when len(backlog) > 0
-	backlog []func()
+	backlog []func() error
 	idle    chan struct{} // if non-nil, closed when active becomes 0
+	errors  []error       // errors returned by workers
 }
 
 // NewQueue returns a Queue that executes up to maxActive items in parallel.
@@ -70,10 +69,7 @@ func NewQueue(maxActive int) *Queue {
 //
 // Add returns immediately, but the queue will be marked as non-idle until after
 // f (and any subsequently-added work) has completed.
-func (q *Queue) Add(f func()) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
+func (q *Queue) Add(f func() error) {
 	st := <-q.st
 	if st.active == q.maxActive {
 		st.backlog = append(st.backlog, f)
@@ -88,10 +84,8 @@ func (q *Queue) Add(f func()) {
 	q.st <- st
 }
 
-func (q *Queue) worker(f func()) {
+func (q *Queue) worker(f func() error) {
 	defer func() {
-		q.mu.Lock()
-
 		st := <-q.st
 		if len(st.backlog) == 0 {
 			if st.active--; st.active == 0 && st.idle != nil {
@@ -101,23 +95,23 @@ func (q *Queue) worker(f func()) {
 			nextF, newBacklog := st.backlog[0], st.backlog[1:]
 			st.backlog = newBacklog
 			q.st <- st
-			q.mu.Unlock()
 			q.worker(nextF)
 			return
 		}
 		q.st <- st
-		q.mu.Unlock()
 	}()
 
-	f()
+	if err := f(); err != nil {
+		st := <-q.st
+		st.errors = append(st.errors, err)
+		q.st <- st
+	}
 }
 
-// Idle returns a channel that will be closed when q has no (active or enqueued)
-// work outstanding.
-func (q *Queue) Idle() <-chan struct{} {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
+// Wait blocks until the queue becomes idle. The queue is considered idle if no
+// work items are running and no work items are waiting to run. Returns the first
+// error encountered by a worker, or nil if all work completed
+func (q *Queue) Wait() error {
 	st := <-q.st
 	if st.idle == nil {
 		st.idle = make(chan struct{})
@@ -126,15 +120,24 @@ func (q *Queue) Idle() <-chan struct{} {
 		}
 	}
 	q.st <- st
-	return st.idle
+
+	<-st.idle
+
+	st = <-q.st
+	errors := st.errors
+	q.st <- st
+
+	if len(errors) > 0 {
+		return errors[0]
+	}
+
+	return nil
 }
 
 // Clear removes all work items from the queue.
 func (q *Queue) Clear() {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	st := <-q.st
 	st.backlog = nil
+	st.errors = nil
 	q.st <- st
 }
