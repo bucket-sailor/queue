@@ -43,10 +43,10 @@ type Queue struct {
 }
 
 type queueState struct {
-	active  int // number of goroutines processing work; always nonzero when len(backlog) > 0
+	active  int // number of goroutines processing work; always nonzero when len(backlog) > 0.
 	backlog []func() error
-	idle    chan struct{} // if non-nil, closed when active becomes 0
-	errors  []error       // errors returned by workers
+	idle    chan struct{} // if non-nil, closed when active becomes 0.
+	errors  []error       // errors returned by workers.
 }
 
 // NewQueue returns a Queue that executes up to maxActive items in parallel.
@@ -54,7 +54,7 @@ type queueState struct {
 // maxActive must be positive.
 func NewQueue(maxActive int) *Queue {
 	if maxActive < 1 {
-		panic(fmt.Sprintf("par.NewQueue called with nonpositive limit (%d)", maxActive))
+		panic(fmt.Sprintf("NewQueue called with nonpositive limit (%d)", maxActive))
 	}
 
 	q := &Queue{
@@ -71,41 +71,46 @@ func NewQueue(maxActive int) *Queue {
 // f (and any subsequently-added work) has completed.
 func (q *Queue) Add(f func() error) {
 	st := <-q.st
+
+	// If there are errors, don't add any more work.
+	if len(st.errors) > 0 {
+		q.st <- st
+		return
+	}
+
 	if st.active == q.maxActive {
 		st.backlog = append(st.backlog, f)
-	} else {
-		if st.active == 0 {
-			// Mark q as non-idle.
-			st.idle = nil
-		}
-		st.active++
-		go q.worker(f)
+		q.st <- st
+		return
 	}
+	if st.active == 0 {
+		// Mark q as non-idle.
+		st.idle = nil
+	}
+	st.active++
 	q.st <- st
-}
 
-func (q *Queue) worker(f func() error) {
-	defer func() {
-		st := <-q.st
-		if len(st.backlog) == 0 {
-			if st.active--; st.active == 0 && st.idle != nil {
-				close(st.idle)
+	go func() {
+		for {
+			err := f()
+
+			st := <-q.st
+			if err != nil {
+				st.errors = append(st.errors, err)
+				st.backlog = nil // Abort processing of any remaining work items.
 			}
-		} else {
-			nextF, newBacklog := st.backlog[0], st.backlog[1:]
-			st.backlog = newBacklog
-			q.st <- st
-			q.worker(nextF)
-			return
-		}
-		q.st <- st
-	}()
 
-	if err := f(); err != nil {
-		st := <-q.st
-		st.errors = append(st.errors, err)
-		q.st <- st
-	}
+			if len(st.backlog) == 0 {
+				if st.active--; st.active == 0 && st.idle != nil {
+					close(st.idle)
+				}
+				q.st <- st
+				return
+			}
+			f, st.backlog = st.backlog[0], st.backlog[1:]
+			q.st <- st
+		}
+	}()
 }
 
 // Wait blocks until the queue becomes idle. The queue is considered idle if no
@@ -119,25 +124,20 @@ func (q *Queue) Wait() error {
 			close(st.idle)
 		}
 	}
+
 	q.st <- st
 
 	<-st.idle
 
 	st = <-q.st
-	errors := st.errors
-	q.st <- st
 
-	if len(errors) > 0 {
-		return errors[0]
+	// Return the first error encountered.
+	var err error
+	if len(st.errors) > 0 {
+		err = st.errors[0]
 	}
 
-	return nil
-}
-
-// Clear removes all work items from the queue.
-func (q *Queue) Clear() {
-	st := <-q.st
-	st.backlog = nil
-	st.errors = nil
 	q.st <- st
+
+	return err
 }

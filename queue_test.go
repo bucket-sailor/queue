@@ -146,59 +146,14 @@ func TestQueue(t *testing.T) {
 		}
 	})
 
-	t.Run("Clear", func(t *testing.T) {
+	t.Run("Error", func(t *testing.T) {
 		q := queue.NewQueue(1)
 
-		// Block the queue.
+		// Add a task that returns no error.
 		q.Add(func() error {
-			time.Sleep(10 * time.Millisecond)
-
-			return nil
-		})
-
-		// Add a queued task that should not be executed just yet.
-		var executed int32
-		q.Add(func() error {
-			atomic.AddInt32(&executed, 1)
-
-			return nil
-		})
-
-		q.Clear()
-
-		time.Sleep(20 * time.Millisecond)
-
-		if atomic.LoadInt32(&executed) != 0 {
-			t.Errorf("Task was executed after Clear was called")
-		}
-
-		// Ensure queue is still operational after Clear
-		q.Add(func() error {
-			atomic.AddInt32(&executed, 1)
-
-			return nil
-		})
-
-		err := q.Wait()
-		if err != nil {
-			t.Errorf("Queue returned error after Clear: %v", err)
-		}
-
-		if atomic.LoadInt32(&executed) != 1 {
-			t.Errorf("Queue did not execute task added after Clear")
-		}
-	})
-
-	t.Run("Error", func(t *testing.T) {
-		q := queue.NewQueue(2)
-
-		noErrorTask := func() error {
 			time.Sleep(10 * time.Millisecond) // Simulate work
 			return nil
-		}
-
-		// Add a task that returns no error.
-		q.Add(noErrorTask)
+		})
 
 		// Add a task that returns an error.
 		expectedError := fmt.Errorf("expected error")
@@ -206,8 +161,13 @@ func TestQueue(t *testing.T) {
 			return expectedError
 		})
 
-		// Add more tasks after the error-generating task to ensure they are processed.
-		q.Add(noErrorTask)
+		// Add more tasks after the error-generating task to ensure they aren't executed.
+		var processedAfterError bool
+		q.Add(func() error {
+			time.Sleep(10 * time.Millisecond) // Simulate work
+			processedAfterError = true
+			return nil
+		})
 
 		// Wait for all tasks to complete and check for an error
 		err := q.Wait()
@@ -217,6 +177,10 @@ func TestQueue(t *testing.T) {
 
 		if !errors.Is(err, expectedError) {
 			t.Errorf("Error returned from Wait does not match expected error: %v", err)
+		}
+
+		if processedAfterError {
+			t.Errorf("Tasks continued to be processed after an error")
 		}
 	})
 
